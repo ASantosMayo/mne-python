@@ -448,12 +448,133 @@ brain = stc.plot(
     hemi="split", views=("lat", "med"), initial_time=0.1, subjects_dir=subjects_dir
 )
 
+
+# %%
+# Decoding over space
+# ==================
+#
+# Analogous to the previous, this strategy consists in fitting a multivariate predictive model on each
+# sensor or spatial location and evaluating its performance at the same location on new
+# epochs. In contrast with previous apporaches, this procedure offers decoding rates for every brain area. 
+# Again, the :class:`mne.decoding.SlidingEstimator` will take as input a
+# pair of features :math:`X` and targets :math:`y`, where :math:`X` has
+# more than 2 dimensions. For decoding over space and given that data :math:`X`
+# is the epochs data of shape n_epochs × n_channels × n_times, we add the parameter 
+# `axis = 1`. It indicates which dimension to iterate, here channels or sensors.
+# By default, :class:`mne.decoding.SlidingEstimator` uses the last dimension of :math:`X`, 
+# which is the time, but indicating axis user can control the sliding dimension.
+#
+# As a result, it provides a n_channels lenght vector showing the decoding rates for each sensor.
+#
+# Spatial decoding
+# ^^^^^^^^^^^^^^^^^
+#
+# We'll use a Logistic Regression for a binary classification as machine
+# learning model.
+
+# We will train the classifier on all left visual vs auditory trials on MEG
+
+clf = make_pipeline(
+    StandardScaler(), LogisticRegression(solver="liblinear", random_state=41)
+)
+
+space_decod = SlidingEstimator(clf, n_jobs=None, scoring="roc_auc", axis=1, verbose=True)
+# here we use cv=3 just for speed
+scores = cross_val_multiscore(space_decod, X, y, cv=3, n_jobs=None)
+
+# Mean scores across cross-validation splits
+scores = np.mean(scores, axis=0)
+
+# Topomap
+fig, ax = plt.subplots(figsize=(6, 5))
+im, _ = mne.viz.plot_topomap(
+    scores,
+    epochs.info,
+    axes=ax,
+    show=False,
+    cmap="Reds",  # 'Reds', 'viridis', 'RdBu_r', etc.
+    vlim=(0.5, None),  # Al ser métrica AUC, el azar es 0.5
+)
+cbar = plt.colorbar(im, ax=ax, shrink=0.8)
+cbar.set_label("AUC Score")
+ax.set_title("Decodificación Espacial por Sensor")
+plt.show()
+
+
+# %%
+# Spatial generalization
+# ^^^^^^^^^^^^^^^^^^^^^^^
+#
+# Spatial generalization is an extension of the decoding over space approach.
+# It consists in evaluating whether the model estimated at a particular
+# brain location accurately predicts any other brain location. Again, it is analogous to
+# transferring a trained model to a distinct learning problem, where the
+# problems correspond to decoding the patterns of brain activity recorded at
+# distinct brain locations. This generalization across location (GAL) results in a
+# matrix indicating the cross-decoding state synchrony between brain areas.
+#
+# The object to for Spatial generalization is the same as before, 
+# :class:`mne.decoding.GeneralizingEstimator`. It expects as input :math:`X`
+# and :math:`y` (similarly to :class:`~mne.decoding.SlidingEstimator`) but
+# generates predictions from each model for all spatial locations. The class
+# :class:`~mne.decoding.GeneralizingEstimator` by default treat the
+# last dimension as the one to be used for generalization testing, then we set the 
+# parameter `axis = 1` to slide across sensors in the channel dimension.
+#
+# This runs the GAL estimation, core of the Time-GAL method. More details
+# in :footcite:`Santos-MayoEtAl2025`:
+
+# define the Spatial generalization object
+space_gen = GeneralizingEstimator(clf, n_jobs=None, scoring="roc_auc", axis=1, verbose=True)
+
+# again, cv=3 just for speed
+scores = cross_val_multiscore(space_gen, X, y, cv=3, n_jobs=None)
+
+# Mean scores across cross-validation splits
+scores = np.mean(scores, axis=0)
+
+# %%
+# Plot the full (generalization) matrix and a topographic view o highest decoding rate (50 connections):
+
+fig, ax = plt.subplots(1, 1)
+im = ax.imshow(
+    scores,
+    interpolation="lanczos",
+    origin="lower",
+    cmap="RdBu_r",
+    extent=epochs.times[[0, -1, 0, -1]],
+    vmin=0.0,
+    vmax=1.0,
+)
+ax.set_xlabel("Testing sensor")
+ax.set_ylabel("Training sensor")
+ax.set_title("Spatial generalization (GAL)")
+ax.axvline(0, color="k")
+ax.axhline(0, color="k")
+cbar = plt.colorbar(im, ax=ax)
+cbar.set_label("AUC")
+
+
+# Topographic connectivity at sensor layout
+scores_no_diag = scores.copy()
+np.fill_diagonal(scores_no_diag, -np.inf)
+top_i, top_j = np.unravel_index(np.argsort(scores_no_diag.ravel())[-50:], scores.shape)
+fig, ax = plt.subplots(figsize=(6, 6))
+mne.viz.plot_sensors(epochs.info, kind="topomap", axes=ax, show=False, title="Top 50 Conexiones Espaciales")
+pos = next(c.get_offsets() for c in ax.collections if len(c.get_offsets()) == len(epochs.ch_names))
+for i, j in zip(top_i, top_j):
+    ax.plot([pos[i, 0], pos[j, 0]], [pos[i, 1], pos[j, 1]], color="red", alpha=0.6, lw=1.2, zorder=1)
+plt.show()
+
+
 # %%
 # Source-space decoding
 # =====================
 #
-# Source space decoding is also possible, but because the number of features
-# can be much larger than in the sensor space, univariate feature selection
+# Source space decoding is also possible using spatial decoding feature information 
+# from brain vertices. Also spatial generalization or GAL can be carried out at 
+# ROIs to inspect its cross-decoding generalization. For temporal decoding, because 
+# the number of features can be much larger than in the sensor space, univariate feature selection
 # using ANOVA f-test (or some other metric) can be done to reduce the feature
 # dimension. Interpreting decoding results might be easier in source space as
 # compared to sensor space.
